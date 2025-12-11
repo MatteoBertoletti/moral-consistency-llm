@@ -1,83 +1,76 @@
-import pandas as pd
 import os
 from datetime import datetime
 from tqdm import tqdm
-
-from data.loader import DataLoader
 from core.models.openai_llm import OpenAILLM
 from core.models.groq_llm import GroqLLM
-from core.models.mock_llm import MockLLM
 from core.prompts.injector import PromptInjector
+from data.loader import DataLoader
 from data.schemas import ModelResponse
 
+# Mapping Nomi Puliti
+MODEL_ALIASES = {
+    "gpt-3.5-turbo": "Closed_GPT3.5",
+    "llama-3.1-8b-instant": "Open_Llama3_Small",
+    "llama-3.3-70b-versatile": "Open_Llama3_Big"
+}
+
 class ExperimentRunner:
-    def __init__(self, llm_instance, output_dir="results"):
-        """
-        Ora il Runner accetta direttamente un'istanza di un modello già pronto.
-        """
+    def __init__(self, llm_instance):
         self.llm = llm_instance
-        self.output_dir = output_dir
-        os.makedirs(output_dir, exist_ok=True)
+        self.clean_name = MODEL_ALIASES.get(self.llm.model_name, "Unknown_Model")
+        self.output_dir = "results/1_raw"
+        os.makedirs(self.output_dir, exist_ok=True)
 
     def run(self, limit=5):
-        # 1. Carichiamo i dati
+        # Carichiamo i dati col nuovo Loader sicuro
         scenarios = DataLoader.load_ethics_commonsense(limit=limit)
         
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        # Il nome del file ora include il nome del modello per non mischiarli
-        clean_model_name = self.llm.model_name.replace("/", "_")
-        filename = f"{self.output_dir}/run_{clean_model_name}_{timestamp}.jsonl"
+        filename = f"{self.output_dir}/{self.clean_name}.jsonl"
+        if os.path.exists(filename):
+            os.remove(filename)
         
-        print(f"\n🚀 Avvio esperimento per modello: {self.llm.model_name}")
+        print(f"\n🚀 Test Modello: {self.clean_name}...")
         
-        count = 0
-        for scenario in tqdm(scenarios, desc=f"Testing {clean_model_name}"):
+        for scenario in tqdm(scenarios, desc="Generating"):
             for style in ["stoic", "anxious", "authoritative"]:
                 
-                # A. Iniezione Prompt
+                # Debug: vediamo se il testo c'è
+                if not scenario.text:
+                    print("⚠️ ERRORE: Testo scenario vuoto!")
+                    continue
+
                 full_prompt = PromptInjector.apply_template(scenario.text, style)
                 
-                # B. Generazione
-                response_text = self.llm.generate(full_prompt)
-                
-                # C. Salvataggio
+                # Generazione Protetta (Try/Except)
+                try:
+                    response_text = self.llm.generate(full_prompt)
+                except Exception as e:
+                    response_text = f"SYSTEM_ERROR: {str(e)}"
+
                 result = ModelResponse(
                     scenario_id=scenario.id,
-                    model_name=self.llm.model_name,
+                    model_name=self.clean_name,
                     prompt_style=style,
                     raw_text=response_text
                 )
                 
                 with open(filename, "a") as f:
                     f.write(result.model_dump_json() + "\n")
-                count += 1
                     
-        print(f"✅ Finito {self.llm.model_name}! {count} risposte salvate in: {filename}")
+        print(f"✅ Salvato: {filename}")
 
 if __name__ == "__main__":
-    # --- CONFIGURAZIONE DELLA SQUADRA ---
-    # Qui definiamo i 4 modelli da testare
-    
+    # LISTA MODELLI AGGIORNATA (Senza Gemma)
     models_to_test = [
-        # 1. CLOSED SOURCE (Il riferimento)
+        # Se non hai pagato OpenAI, questo fallirà (darà SYSTEM_ERROR nel file)
         OpenAILLM("gpt-3.5-turbo"), 
         
-        # 2. OPEN SOURCE (Standard) - Llama 3 8B
-        GroqLLM("llama3-8b-8192"),
-        
-        # 3. OPEN SOURCE (Potente) - Mixtral 8x7B
-        GroqLLM("mixtral-8x7b-32768"),
-        
-        # 4. OPEN SOURCE (Google) - Gemma 7B
-        GroqLLM("gemma-7b-it")
+        # Modelli Groq (Funzionanti)
+        GroqLLM("llama-3.1-8b-instant"),      
+        GroqLLM("llama-3.3-70b-versatile")
     ]
 
-    print(f"🏁 Inizio Benchmark su {len(models_to_test)} modelli...")
-    
-    # Ciclo principale: Esegue l'esperimento per ogni modello
+    print(f"🏁 Inizio Benchmark (3 Modelli)...")
     for model in models_to_test:
         runner = ExperimentRunner(llm_instance=model)
-        # Eseguiamo su 5 scenari per testare (totale 15 risposte per modello)
         runner.run(limit=5)
-        
-    print("\n🎉 TUTTI GLI ESPERIMENTI COMPLETATI! 🎉")
